@@ -1,6 +1,6 @@
 // Copyright 2017, The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE.md file.
+// license that can be found in the LICENSE file.
 
 package cmp
 
@@ -132,7 +132,7 @@ func TestOptionPanic(t *testing.T) {
 	}, {
 		label:     "FilterPath",
 		fnc:       FilterPath,
-		args:      []interface{}{func(Path) bool { return true }, &defaultReporter{}},
+		args:      []interface{}{func(Path) bool { return true }, Reporter(&defaultReporter{})},
 		wantPanic: "invalid option type",
 	}, {
 		label: "FilterPath",
@@ -141,7 +141,7 @@ func TestOptionPanic(t *testing.T) {
 	}, {
 		label:     "FilterPath",
 		fnc:       FilterPath,
-		args:      []interface{}{func(Path) bool { return true }, Options{Ignore(), &defaultReporter{}}},
+		args:      []interface{}{func(Path) bool { return true }, Options{Ignore(), Reporter(&defaultReporter{})}},
 		wantPanic: "invalid option type",
 	}, {
 		label:     "FilterValues",
@@ -174,7 +174,7 @@ func TestOptionPanic(t *testing.T) {
 	}, {
 		label:     "FilterValues",
 		fnc:       FilterValues,
-		args:      []interface{}{func(int, int) bool { return true }, &defaultReporter{}},
+		args:      []interface{}{func(int, int) bool { return true }, Reporter(&defaultReporter{})},
 		wantPanic: "invalid option type",
 	}, {
 		label: "FilterValues",
@@ -183,7 +183,7 @@ func TestOptionPanic(t *testing.T) {
 	}, {
 		label:     "FilterValues",
 		fnc:       FilterValues,
-		args:      []interface{}{func(int, int) bool { return true }, Options{Ignore(), &defaultReporter{}}},
+		args:      []interface{}{func(int, int) bool { return true }, Options{Ignore(), Reporter(&defaultReporter{})}},
 		wantPanic: "invalid option type",
 	}}
 

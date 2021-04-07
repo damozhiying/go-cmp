@@ -1,6 +1,6 @@
 // Copyright 2017, The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE.md file.
+// license that can be found in the LICENSE file.
 
 package diff
 
@@ -18,7 +18,7 @@ func TestDifference(t *testing.T) {
 		// they can be used by the test author to indicate a missing symbol
 		// in one of the lists.
 		x, y string
-		want string
+		want string // '|' separated list of possible outputs
 	}{{
 		x:    "",
 		y:    "",
@@ -30,7 +30,7 @@ func TestDifference(t *testing.T) {
 	}, {
 		x:    "##",
 		y:    "# ",
-		want: ".X",
+		want: ".X|X.",
 	}, {
 		x:    "a#",
 		y:    "A ",
@@ -42,7 +42,7 @@ func TestDifference(t *testing.T) {
 	}, {
 		x:    "# ",
 		y:    "##",
-		want: ".Y",
+		want: ".Y|Y.",
 	}, {
 		x:    " #",
 		y:    "@#",
@@ -142,7 +142,7 @@ func TestDifference(t *testing.T) {
 	}, {
 		x:    "ABCAB BA ",
 		y:    "  C BABAC",
-		want: "XX.X.Y..Y",
+		want: "XX.X.Y..Y|XX.Y.X..Y",
 	}, {
 		x:    "# ####  ###",
 		y:    "#y####yy###",
@@ -158,7 +158,7 @@ func TestDifference(t *testing.T) {
 	}, {
 		x:    "0 12z3x 456789 x x 0",
 		y:    "0y12Z3 y456789y y y0",
-		want: ".Y..M.XY......YXYXY.",
+		want: ".Y..M.XY......YXYXY.|.Y..M.XY......XYXYY.",
 	}, {
 		x:    "0 2 4 6 8 ..................abXXcdEXF.ghXi",
 		y:    " 1 3 5 7 9..................AB  CDE F.GH I",
@@ -210,7 +210,7 @@ func TestDifference(t *testing.T) {
 	}, {
 		x:    "0123456789     ",
 		y:    "     5678901234",
-		want: "XXXXX.....YYYYY",
+		want: "XXXXX.....YYYYY|YYYYY.....XXXXX",
 	}, {
 		x:    "0123456789    ",
 		y:    "    4567890123",
@@ -246,9 +246,14 @@ func TestDifference(t *testing.T) {
 			x := strings.Replace(tt.x, " ", "", -1)
 			y := strings.Replace(tt.y, " ", "", -1)
 			es := testStrings(t, x, y)
-			if got := es.String(); got != tt.want {
-				t.Errorf("Difference(%s, %s):\ngot  %s\nwant %s", x, y, got, tt.want)
+			var want string
+			got := es.String()
+			for _, want = range strings.Split(tt.want, "|") {
+				if got == want {
+					return
+				}
 			}
+			t.Errorf("Difference(%s, %s):\ngot  %s\nwant %s", x, y, got, want)
 		})
 	}
 }
@@ -387,9 +392,9 @@ func compareByte(x, y byte) (r Result) {
 }
 
 var (
-	equalResult     = Result{NDiff: 0}
-	similarResult   = Result{NDiff: 1}
-	differentResult = Result{NDiff: 2}
+	equalResult     = Result{NumDiff: 0}
+	similarResult   = Result{NumDiff: 1}
+	differentResult = Result{NumDiff: 2}
 )
 
 func TestResult(t *testing.T) {
@@ -398,39 +403,39 @@ func TestResult(t *testing.T) {
 		wantEqual   bool
 		wantSimilar bool
 	}{
-		// equalResult is equal since NDiff == 0, by definition of Equal method.
+		// equalResult is equal since NumDiff == 0, by definition of Equal method.
 		{equalResult, true, true},
 		// similarResult is similar since it is a binary result where only one
-		// element was compared (i.e., Either NSame==1 or NDiff==1).
+		// element was compared (i.e., Either NumSame==1 or NumDiff==1).
 		{similarResult, false, true},
 		// differentResult is different since there are enough differences that
 		// it isn't even considered similar.
 		{differentResult, false, false},
 
 		// Zero value is always equal.
-		{Result{NSame: 0, NDiff: 0}, true, true},
+		{Result{NumSame: 0, NumDiff: 0}, true, true},
 
-		// Binary comparisons (where NSame+NDiff == 1) are always similar.
-		{Result{NSame: 1, NDiff: 0}, true, true},
-		{Result{NSame: 0, NDiff: 1}, false, true},
+		// Binary comparisons (where NumSame+NumDiff == 1) are always similar.
+		{Result{NumSame: 1, NumDiff: 0}, true, true},
+		{Result{NumSame: 0, NumDiff: 1}, false, true},
 
 		// More complex ratios. The exact ratio for similarity may change,
 		// and may require updates to these test cases.
-		{Result{NSame: 1, NDiff: 1}, false, true},
-		{Result{NSame: 1, NDiff: 2}, false, true},
-		{Result{NSame: 1, NDiff: 3}, false, false},
-		{Result{NSame: 2, NDiff: 1}, false, true},
-		{Result{NSame: 2, NDiff: 2}, false, true},
-		{Result{NSame: 2, NDiff: 3}, false, true},
-		{Result{NSame: 3, NDiff: 1}, false, true},
-		{Result{NSame: 3, NDiff: 2}, false, true},
-		{Result{NSame: 3, NDiff: 3}, false, true},
-		{Result{NSame: 1000, NDiff: 0}, true, true},
-		{Result{NSame: 1000, NDiff: 1}, false, true},
-		{Result{NSame: 1000, NDiff: 2}, false, true},
-		{Result{NSame: 0, NDiff: 1000}, false, false},
-		{Result{NSame: 1, NDiff: 1000}, false, false},
-		{Result{NSame: 2, NDiff: 1000}, false, false},
+		{Result{NumSame: 1, NumDiff: 1}, false, true},
+		{Result{NumSame: 1, NumDiff: 2}, false, true},
+		{Result{NumSame: 1, NumDiff: 3}, false, false},
+		{Result{NumSame: 2, NumDiff: 1}, false, true},
+		{Result{NumSame: 2, NumDiff: 2}, false, true},
+		{Result{NumSame: 2, NumDiff: 3}, false, true},
+		{Result{NumSame: 3, NumDiff: 1}, false, true},
+		{Result{NumSame: 3, NumDiff: 2}, false, true},
+		{Result{NumSame: 3, NumDiff: 3}, false, true},
+		{Result{NumSame: 1000, NumDiff: 0}, true, true},
+		{Result{NumSame: 1000, NumDiff: 1}, false, true},
+		{Result{NumSame: 1000, NumDiff: 2}, false, true},
+		{Result{NumSame: 0, NumDiff: 1000}, false, false},
+		{Result{NumSame: 1, NumDiff: 1000}, false, false},
+		{Result{NumSame: 2, NumDiff: 1000}, false, false},
 	}
 
 	for _, tt := range tests {

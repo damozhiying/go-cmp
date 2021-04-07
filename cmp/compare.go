@@ -1,11 +1,15 @@
 // Copyright 2017, The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE.md file.
+// license that can be found in the LICENSE file.
 
 // Package cmp determines equality of values.
 //
 // This package is intended to be a more powerful and safer alternative to
 // reflect.DeepEqual for comparing whether two values are semantically equal.
+// It is intended to only be used in tests, as performance is not a goal and
+// it may panic if it cannot compare the values. Its propensity towards
+// panicking means that its unsuitable for production environments where a
+// spurious panic may be fatal.
 //
 // The primary features of cmp are:
 //
@@ -22,8 +26,8 @@
 // equality is determined by recursively comparing the primitive kinds on both
 // values, much like reflect.DeepEqual. Unlike reflect.DeepEqual, unexported
 // fields are not compared by default; they result in panics unless suppressed
-// by using an Ignore option (see cmpopts.IgnoreUnexported) or explicitly compared
-// using the AllowUnexported option.
+// by using an Ignore option (see cmpopts.IgnoreUnexported) or explicitly
+// compared using the Exporter option.
 package cmp
 
 import (
@@ -32,17 +36,13 @@ import (
 	"strings"
 
 	"github.com/google/go-cmp/cmp/internal/diff"
+	"github.com/google/go-cmp/cmp/internal/flags"
 	"github.com/google/go-cmp/cmp/internal/function"
 	"github.com/google/go-cmp/cmp/internal/value"
 )
 
-var nothing = reflect.Value{}
-
 // Equal reports whether x and y are equal by recursively applying the
 // following rules in the given order to x and y and all of their sub-values:
-//
-// • If two values are not of the same type, then they are never equal
-// and the overall result is false.
 //
 // • Let S be the set of all Ignore, Transformer, and Comparer options that
 // remain after applying all path filters, value filters, and type filters.
@@ -56,56 +56,118 @@ var nothing = reflect.Value{}
 //
 // • If the values have an Equal method of the form "(T) Equal(T) bool" or
 // "(T) Equal(I) bool" where T is assignable to I, then use the result of
-// x.Equal(y) even if x or y is nil.
-// Otherwise, no such method exists and evaluation proceeds to the next rule.
+// x.Equal(y) even if x or y is nil. Otherwise, no such method exists and
+// evaluation proceeds to the next rule.
 //
 // • Lastly, try to compare x and y based on their basic kinds.
 // Simple kinds like booleans, integers, floats, complex numbers, strings, and
 // channels are compared using the equivalent of the == operator in Go.
 // Functions are only equal if they are both nil, otherwise they are unequal.
-// Pointers are equal if the underlying values they point to are also equal.
-// Interfaces are equal if their underlying concrete values are also equal.
 //
-// Structs are equal if all of their fields are equal. If a struct contains
-// unexported fields, Equal panics unless the AllowUnexported option is used or
-// an Ignore option (e.g., cmpopts.IgnoreUnexported) ignores that field.
+// Structs are equal if recursively calling Equal on all fields report equal.
+// If a struct contains unexported fields, Equal panics unless an Ignore option
+// (e.g., cmpopts.IgnoreUnexported) ignores that field or the Exporter option
+// explicitly permits comparing the unexported field.
 //
-// Arrays, slices, and maps are equal if they are both nil or both non-nil
-// with the same length and the elements at each index or key are equal.
-// Note that a non-nil empty slice and a nil slice are not equal.
-// To equate empty slices and maps, consider using cmpopts.EquateEmpty.
+// Slices are equal if they are both nil or both non-nil, where recursively
+// calling Equal on all non-ignored slice or array elements report equal.
+// Empty non-nil slices and nil slices are not equal; to equate empty slices,
+// consider using cmpopts.EquateEmpty.
+//
+// Maps are equal if they are both nil or both non-nil, where recursively
+// calling Equal on all non-ignored map entries report equal.
 // Map keys are equal according to the == operator.
 // To use custom comparisons for map keys, consider using cmpopts.SortMaps.
+// Empty non-nil maps and nil maps are not equal; to equate empty maps,
+// consider using cmpopts.EquateEmpty.
+//
+// Pointers and interfaces are equal if they are both nil or both non-nil,
+// where they have the same underlying concrete type and recursively
+// calling Equal on the underlying values reports equal.
+//
+// Before recursing into a pointer, slice element, or map, the current path
+// is checked to detect whether the address has already been visited.
+// If there is a cycle, then the pointed at values are considered equal
+// only if both addresses were previously visited in the same path step.
 func Equal(x, y interface{}, opts ...Option) bool {
 	s := newState(opts)
-	s.compareAny(reflect.ValueOf(x), reflect.ValueOf(y))
+	s.compareAny(rootStep(x, y))
 	return s.result.Equal()
 }
 
-// Diff returns a human-readable report of the differences between two values.
-// It returns an empty string if and only if Equal returns true for the same
-// input values and options. The output string will use the "-" symbol to
-// indicate elements removed from x, and the "+" symbol to indicate elements
-// added to y.
+// Diff returns a human-readable report of the differences between two values:
+// y - x. It returns an empty string if and only if Equal returns true for the
+// same input values and options.
 //
-// Do not depend on this output being stable.
+// The output is displayed as a literal in pseudo-Go syntax.
+// At the start of each line, a "-" prefix indicates an element removed from x,
+// a "+" prefix to indicates an element added from y, and the lack of a prefix
+// indicates an element common to both x and y. If possible, the output
+// uses fmt.Stringer.String or error.Error methods to produce more humanly
+// readable outputs. In such cases, the string is prefixed with either an
+// 's' or 'e' character, respectively, to indicate that the method was called.
+//
+// Do not depend on this output being stable. If you need the ability to
+// programmatically interpret the difference, consider using a custom Reporter.
 func Diff(x, y interface{}, opts ...Option) string {
+	s := newState(opts)
+
+	// Optimization: If there are no other reporters, we can optimize for the
+	// common case where the result is equal (and thus no reported difference).
+	// This avoids the expensive construction of a difference tree.
+	if len(s.reporters) == 0 {
+		s.compareAny(rootStep(x, y))
+		if s.result.Equal() {
+			return ""
+		}
+		s.result = diff.Result{} // Reset results
+	}
+
 	r := new(defaultReporter)
-	opts = Options{Options(opts), r}
-	eq := Equal(x, y, opts...)
+	s.reporters = append(s.reporters, reporter{r})
+	s.compareAny(rootStep(x, y))
 	d := r.String()
-	if (d == "") != eq {
+	if (d == "") != s.result.Equal() {
 		panic("inconsistent difference and equality results")
 	}
 	return d
 }
 
+// rootStep constructs the first path step. If x and y have differing types,
+// then they are stored within an empty interface type.
+func rootStep(x, y interface{}) PathStep {
+	vx := reflect.ValueOf(x)
+	vy := reflect.ValueOf(y)
+
+	// If the inputs are different types, auto-wrap them in an empty interface
+	// so that they have the same parent type.
+	var t reflect.Type
+	if !vx.IsValid() || !vy.IsValid() || vx.Type() != vy.Type() {
+		t = reflect.TypeOf((*interface{})(nil)).Elem()
+		if vx.IsValid() {
+			vvx := reflect.New(t).Elem()
+			vvx.Set(vx)
+			vx = vvx
+		}
+		if vy.IsValid() {
+			vvy := reflect.New(t).Elem()
+			vvy.Set(vy)
+			vy = vvy
+		}
+	} else {
+		t = vx.Type()
+	}
+
+	return &pathStep{t, vx, vy}
+}
+
 type state struct {
 	// These fields represent the "comparison state".
 	// Calling statelessCompare must not result in observable changes to these.
-	result   diff.Result // The current result of comparison
-	curPath  Path        // The current path in the value tree
-	reporter reporter    // Optional reporter used for difference formatting
+	result    diff.Result // The current result of comparison
+	curPath   Path        // The current path in the value tree
+	curPtrs   pointerPath // The current set of visited pointers
+	reporters []reporter  // Optional reporters
 
 	// recChecker checks for infinite cycles applying the same set of
 	// transformers upon the output of itself.
@@ -116,8 +178,8 @@ type state struct {
 	dynChecker dynChecker
 
 	// These fields, once set by processOption, will not change.
-	exporters fieldExporter // Set of structs with unexported field visibility
-	opts      Options       // List of all fundamental and filter options
+	exporters map[reflect.Type]bool // Set of structs with unexported field visibility
+	opts      Options               // List of all fundamental and filter options
 }
 
 func newState(opts []Option) *state {
@@ -143,12 +205,12 @@ func (s *state) processOption(opt Option) {
 			panic(fmt.Sprintf("cannot use an unfiltered option: %v", opt))
 		}
 		s.opts = append(s.opts, opt)
-	case fieldExporter:
-		for t := range opt.typs {
-			s.exporters.insertType(t)
+	case visibleStructs:
+		if s.exporters == nil {
+			s.exporters = make(map[reflect.Type]bool)
 		}
-		for p := range opt.pkgs {
-			s.exporters.insertPrefix(p)
+		for t := range opt {
+			s.exporters[t] = true
 		}
 	case reporter:
 		if s.reporter != nil {
@@ -379,8 +441,8 @@ func detectRaces(c chan<- reflect.Value, f reflect.Value, vs ...reflect.Value) {
 // Otherwise, it returns the input value as is.
 func sanitizeValue(v reflect.Value, t reflect.Type) reflect.Value {
 	// TODO(dsnet): Workaround for reflect bug (https://golang.org/issue/22143).
-	// The upstream fix landed in Go1.10, so we can remove this when dropping
-	// support for Go1.9 and below.
+	// The upstream fix landed in Go1.10, so we can remove this when drop support
+	// for Go1.9 and below.
 	if v.Kind() == reflect.Interface && v.IsNil() && v.Type() != t {
 		return reflect.New(t).Elem()
 	}
@@ -413,7 +475,7 @@ func (s *state) compareStruct(vx, vy reflect.Value, t reflect.Type) {
 				vax = makeAddressable(vx)
 				vay = makeAddressable(vy)
 			}
-			step.force = s.exporters.mayExport(t, t.Field(i))
+			step.force = s.exporters[t]
 			step.pvx = vax
 			step.pvy = vay
 			step.field = t.Field(i)
