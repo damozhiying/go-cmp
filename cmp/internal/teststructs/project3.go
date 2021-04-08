@@ -1,6 +1,6 @@
 // Copyright 2017, The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE.md file.
+// license that can be found in the LICENSE file.
 
 package teststructs
 
@@ -39,6 +39,11 @@ func equalDirt(x, y *Dirt) bool {
 }
 */
 
+type FakeMutex struct {
+	sync.Locker
+	x struct{}
+}
+
 type Dirt struct {
 	table    Table // Always concrete type of MockTable
 	ts       Timestamp
@@ -47,7 +52,7 @@ type Dirt struct {
 	wizard   map[string]*pb.Wizard
 	sadistic map[string]*pb.Sadistic
 	lastTime int64
-	mu       sync.Mutex
+	mu       FakeMutex
 }
 
 type DiscordState int
